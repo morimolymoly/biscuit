@@ -6,7 +6,7 @@ CFLAGS := $(BASEFLAGS) -nostdlib -nostdinc -I$(TOP) -fno-stack-protector -fno-bu
 
 # bootloader sources
 ASMS := boot.S
-CS   := bootmain.c main.c chentry.c
+CS   := ./bootloader/bootmain.c ./util/chentry.c
 SRCS := $(ASMS) $(CS)
 
 # kernel sources
@@ -40,7 +40,7 @@ ifeq ($(OS), OpenBSD)
 	ASFLAGS += -nopie
 endif
 
-all: d.img go.img
+all: go.img
 
 -include $(RFS)
 
@@ -50,15 +50,13 @@ boot: boot.o bootmain.o
 	./stamp.py $@.bin
 	mv $@.bin $@
 
-bootmain.o: bootmain.c
+bootmain.o: ./bootloader/bootmain.c
 	@# don't use -Os because it rearranges code in .text such that start
 	@# isn't first. htf do i force ld to put a specific function first in
 	@# the section?
 	@#$(CC) -c $(CFLAGS) -Os $<
-	$(CC) -m32 -c $(CFLAGS) $<
+	$(CC) -m32 -c -Ibootloader $(CFLAGS) $<
 
-d.img: main boot
-	cat boot main > $@
 
 go.img: boot main.gobin $(SKELDEPS) $(FSUPROGS)
 	./mkbdisk.py boot main.gobin $@ $(SKEL) || { rm -f $@; false; }
@@ -86,7 +84,7 @@ $(UPROGS): % : %.c user/litc.o
 	    -Wl,-n -o $@ $< user/litc.o
 
 mpentry.bin: mpentry.S
-	$(CC) -o mpentry.elf -Ttext 0x8000 -Wl,-n -nostdlib $^
+	$(CC) -o mpentry.elf -Ttext 0x8000 -Wl,-n -no-pie -nostdlib $^
 	objcopy -O binary -j.text mpentry.elf $@
 
 $(BGOS): %.bgo : %
@@ -95,33 +93,16 @@ $(BGOS): %.bgo : %
 bins.go: $(BGOS) prepbins.py
 	./prepbins.py $(BGOS) > $@
 
-main: main.o
-	$(LD) -static -e main -o $@ $<
 
-chentry: chentry.c
-	$(CC) $(BASEFLAGS) -o $@ chentry.c
+chentry: ./util/chentry.c
+	$(CC) $(BASEFLAGS) -o $@ ./util/chentry.c
 
 clean:
 	rm -f $(BGOS) $(OBJS) $(RFS) boot.elf d.img main boot main.gobin \
 	    go.img chentry mpentry.elf mpentry.bin bins.go user/litc.o \
 	    $(FSUPROGS) $(UPROGS)
 
-qemu: d.img
-	$(QEMU) $(QOPTS) -hda d.img
-
-qemu-gdb: d.img
-	$(QEMU) $(QOPTS) -S -s -hda d.img
-
-gqemu: go.img
-	$(QEMU) $(QOPTS) -nographic -hda go.img
-
-gqemux: go.img
-	$(QEMU) $(QOPTS) -serial stdio -hda go.img
-
-gqemu-gdb: go.img
-	$(QEMU) $(QOPTS) -nographic -S -s -hda go.img
-
-gqemux-gdb: go.img
-	$(QEMU) $(QOPTS) -S -s -serial stdio -hda go.img
+qemu: go.img
+	$(QEMU) $(QOPTS) -hda go.img
 
 .PHONY: clean qemu qemu-gdb gqemu gqemux gqemu-gdb gqemux-gdb

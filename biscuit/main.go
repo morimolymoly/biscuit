@@ -733,7 +733,7 @@ func main() {
 		panic("no IDE disk")
 	}
 	fs_init()
-
+	fmt.Printf("morimolymoly was here!\n")
 	exec := func(cmd string) {
 		path := strings.Split(cmd, "/")
 		ret := sys_execv(path, nil)
