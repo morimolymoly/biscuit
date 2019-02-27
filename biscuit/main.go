@@ -52,9 +52,11 @@ const(
 
 	// low 3 bits must be zero
 	IRQ_BASE  = 32
+	IRQ_KBD = 1
 	IRQ_DISK  = 14
 	IRQ_LAST  = IRQ_BASE + 16
 	INT_DISK  = IRQ_BASE + IRQ_DISK
+	INT_KBD = IRQ_BASE + IRQ_KBD
 )
 
 // trap cannot do anything that may have side-effects on the runtime (like
@@ -110,6 +112,8 @@ func trapstub(tf *[TFSIZE]int, pid int) {
 		runtime.Procyield()
 	case INT_DISK:
 		runtime.Proccontinue()
+	case INT_KBD:
+		runtime.Proccontinue()
 	default:
 		runtime.Pnum(trapno)
 		runtime.Pnum(tf[TF_RIP])
@@ -117,6 +121,70 @@ func trapstub(tf *[TFSIZE]int, pid int) {
 		for {}
 	}
 }
+
+func trap_kbd(ts *trapstore_t) {
+	fmt.Println("KEYBOARRRRRRRRRRRRD!!!!")
+	cons.kbd_int <- true
+}
+
+type cons_t struct {
+	kbd_int chan bool
+	reader	chan []byte
+	reqc	chan int
+}
+
+var cons	= cons_t{}
+
+func kbd_daemon(cons *cons_t, km map[int]byte) {
+	inb := runtime.Inb
+	kready := func() bool {
+		ibf := 1 << 0
+		st := inb(0x64)
+		if st & ibf == 0 {
+			//panic("no kbd data?")
+			return false
+		}
+		return true
+	}
+	var reqc chan int
+	data := make([]byte, 0)
+	for {
+		select {
+		case <- cons.kbd_int:
+			if !kready() {
+				continue
+			}
+			sc := inb(0x60)
+			c, ok := km[sc]
+			if ok {
+				data = append(data, c)
+			}
+		case l := <- reqc:
+			if l > len(data) {
+				l = len(data)
+			}
+			data = data[0:l]
+			cons.reader <- data
+			data = make([]byte, 0)
+		}
+		if len(data) == 0 {
+			reqc = nil
+		} else {
+			reqc = cons.reqc
+		}
+	}
+}
+
+// reads keyboard data, blocking for at least 1 byte. returns at most cnt
+// bytes.
+func kbd_get(cnt int) []byte {
+	if cnt < 0 {
+		panic("negative cnt")
+	}
+	cons.reqc <- cnt
+	return <- cons.reader
+}
+
 
 func trap(handlers map[int]func(*trapstore_t)) {
 	for {
@@ -156,6 +224,35 @@ func trap_disk(ts *trapstore_t) {
 
 //var klock	= sync.Mutex{}
 
+func kbd_init() {
+	km := make(map[int]byte)
+	NO := byte(0)
+	tm := []byte{
+	    // ty xv6
+	    NO,   0x1B, '1',  '2',  '3',  '4',  '5',  '6',  // 0x00
+	    '7',  '8',  '9',  '0',  '-',  '=',  '\b', '\t',
+	    'q',  'w',  'e',  'r',  't',  'y',  'u',  'i',  // 0x10
+	    'o',  'p',  '[',  ']',  '\n', NO,   'a',  's',
+	    'd',  'f',  'g',  'h',  'j',  'k',  'l',  ';',  // 0x20
+	    '\'', '`',  NO,   '\\', 'z',  'x',  'c',  'v',
+	    'b',  'n',  'm',  ',',  '.',  '/',  NO,   '*',  // 0x30
+	    NO,   ' ',  NO,   NO,   NO,   NO,   NO,   NO,
+	    NO,   NO,   NO,   NO,   NO,   NO,   NO,   '7',  // 0x40
+	    '8',  '9',  '-',  '4',  '5',  '6',  '+',  '1',
+	    '2',  '3',  '0',  '.',  NO,   NO,   NO,   NO,   // 0x50
+	    }
+
+	for i, c := range tm {
+		km[i] = c
+	}
+	cons.kbd_int = make(chan bool)
+	cons.reader = make(chan []byte)
+	cons.reqc = make(chan int)
+	go kbd_daemon(&cons, km)
+	irq_unmask(IRQ_KBD)
+	// make sure kbd int is clear
+	runtime.Inb(0x60)
+}
 func trap_syscall(ts *trapstore_t) {
 	//klock.Lock()
 	//defer klock.Unlock()
@@ -723,12 +820,13 @@ func main() {
 	     PGFAULT: trap_pgfault,
 	     SYSCALL: trap_syscall,
 	     INT_DISK: trap_disk,
+	     INT_KBD: trap_kbd,
 	     }
 	go trap(handlers)
 
 	init_8259()
-	cpus_start()
-
+	//cpus_start()
+	kbd_init()
 	if !ide_init() {
 		panic("no IDE disk")
 	}
